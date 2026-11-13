@@ -96,3 +96,7 @@ export const STAT_DEFS = [
 export const STAT_CEILING = { number: 1e9, seconds: 31_536_000_000, currency: 1e12, percent: 100 } as const;
 export const STATS_REPORT_MAX = 200;
 export const STATS_REPORT_EVERY_MS = 60 * 1000;
+
+// Invites (invite.ts): the most direct invites remembered per player and the friends-joined ceiling.
+export const INVITES_SENT_MAX = 200;
+export const INVITES_MAX = 1e6;

@@ -1,4 +1,5 @@
 import { Room, Client, CloseCode } from "colyseus";
+import type { Filter } from "mongodb";
 import { WorldState, PlayerState } from "./schema/WorldState.js";
 import { GUEST_ID_PREFIX, LB_REPORT_EVERY_MS, STATS_REPORT_EVERY_MS, LEADERBOARD_EVERY_MS, NAME_MAX, PFP_MAX_LEN, RECONNECT_SECONDS, ROOM_MAX_CLIENTS } from "../constants.js";
 import { getPlayers, type PlayerDoc } from "../db.js";
@@ -6,6 +7,7 @@ import { sanitizeProgress } from "../sanitize.js";
 import { applyAvatar, applyEmote, applyLoadout, applyPose } from "../presence.js";
 import { canVerify, reportScores, reportStats, scoresFromDoc, statsFromDoc, verifyToken, type Scores, type StatValues } from "../bloxity.js";
 import { ranksOf, topBoards } from "../leaderboard.js";
+import { inviteView, isUserId, readInvite, rememberSent, type InviteState } from "../invite.js";
 
 function sanitizeName(raw: unknown): string {
   return typeof raw === "string" ? raw.slice(0, NAME_MAX) : "";
@@ -40,6 +42,10 @@ export class WorldRoom extends Room<{ state: WorldState }> {
   private scoreDocs = new Map<string, Partial<PlayerDoc>>();
   private reported = new Map<string, string>();
   private statsReported = new Map<string, string>(); // account -> the stat values last reported
+  // sessionId -> invite state (invite.ts), read with a signed-in player's save; and the inviter's
+  // account id from the join options (`ref`: the invite link's tag).
+  private inviteStates = new Map<string, InviteState>();
+  private refs = new Map<string, string>();
 
   messages = {
     // Debounced push of the client's whole progress. Upserts, so a first save creates the document.
@@ -83,6 +89,30 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     loadout: (client: Client, msg: unknown) => {
       const p = this.state.players.get(client.sessionId);
       if (p) applyLoadout(p, msg);
+    },
+    // Invites (invite.ts; they earn the client's Friend Boost). `invited` { friendId }: the client sent a
+    // direct Bloxity invite; remembered so that friend counts when they join. `inviteRefresh` re-reads
+    // the friends-joined count (credited in another room / pod). Both answer `invite`.
+    invited: async (client: Client, msg: { friendId?: unknown }) => {
+      const st = this.inviteStates.get(client.sessionId);
+      const friendId = msg?.friendId;
+      if (!st || !isUserId(friendId) || friendId === this.userIds.get(client.sessionId)) return;
+      if (rememberSent(st, friendId)) await this.saveInvite(client.sessionId, { invitesSent: [...st.sent] });
+      if (this.inviteStates.get(client.sessionId) === st) client.send("invite", inviteView(st));
+    },
+    inviteRefresh: async (client: Client) => {
+      const st = this.inviteStates.get(client.sessionId);
+      const userId = this.userIds.get(client.sessionId);
+      const players = getPlayers();
+      if (!st) return client.send("invite", { ...inviteView(readInvite(null)), guest: !userId });
+      if (userId && players) {
+        try {
+          st.joined = readInvite(await players.findOne({ _id: userId })).joined;
+        } catch (err) {
+          console.warn("[WorldRoom] inviteRefresh failed", err);
+        }
+      }
+      if (this.inviteStates.get(client.sessionId) === st) client.send("invite", inviteView(st));
     },
     // The Bloxity emote the sender started from the portal's emote wheel ({ id }, "" = stopped).
     emote: (client: Client, msg: unknown) => {
@@ -191,7 +221,7 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     }
   }
 
-  onJoin(client: Client, options?: { username?: string; userId?: string; token?: string; pfp?: string; pose?: unknown; loadout?: unknown; avatar?: string }) {
+  onJoin(client: Client, options?: { username?: string; userId?: string; token?: string; ref?: string; pfp?: string; pose?: unknown; loadout?: unknown; avatar?: string }) {
     const p = new PlayerState();
     p.username = sanitizeName(options?.username);
     p.pfp = sanitizePfp(options?.pfp);
@@ -199,6 +229,8 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     applyPose(p, options?.pose);
     applyLoadout(p, options?.loadout);
     applyAvatar(p, options);
+    const ref = options?.ref;
+    if (isUserId(ref)) this.refs.set(client.sessionId, ref);
     this.state.players.set(client.sessionId, p);
     // Locally this answers at once; deployed it waits for the Bloxity token check.
     void this.identifyFrom(client, p, options);
@@ -237,6 +269,8 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     void this.reportBoards([sessionId]); // the player's final scores (reads its maps before they are cleared)
     void this.reportStatsFor([sessionId]);
     this.scoreDocs.delete(sessionId);
+    this.inviteStates.delete(sessionId);
+    this.refs.delete(sessionId);
     this.state.players.delete(sessionId);
     this.userIds.delete(sessionId);
     this.identified.delete(sessionId);
@@ -308,6 +342,70 @@ export class WorldRoom extends Room<{ state: WorldState }> {
     const now = Date.now();
     if (!doc) client.send("noProgress", { serverTime: now });
     else client.send("progress", { ...(sanitizeProgress(doc) ?? {}), serverTime: now });
+    // Invites: a signed-in player gets their state (and may be credited as someone's invited friend);
+    // a guest is told invites need a Bloxity account.
+    if (userId) {
+      const invite = readInvite(doc);
+      this.inviteStates.set(client.sessionId, invite);
+      client.send("invite", inviteView(invite));
+      void this.creditInvite(client, userId, invite, doc);
+    } else client.send("invite", { ...inviteView(readInvite(null)), guest: true });
     void this.sendLeaderboard(client);
+  }
+
+  // Stores invite fields. True when stored, or when there is nowhere to store them (no database:
+  // they live in `inviteStates` for the session).
+  private async saveInvite(sessionId: string, fields: Partial<PlayerDoc>): Promise<boolean> {
+    const userId = this.userIds.get(sessionId);
+    const players = getPlayers();
+    if (!userId || !players) return true;
+    try {
+      await players.updateOne({ _id: userId }, { $set: { ...fields, updatedAt: new Date() }, $setOnInsert: { version: 1 } }, { upsert: true });
+      return true;
+    } catch (err) {
+      console.warn("[WorldRoom] saveInvite failed", err);
+      return false;
+    }
+  }
+
+  // A signed-in player joined who was never invited before: if their link's `ref` (or a direct invite,
+  // `invitesSent`) names another existing player, they become that player's invited friend. `invitedBy`
+  // is set once (a conditional write, so two rooms can't both credit), then the inviter's `invites`
+  // goes up (live when the inviter is in this room: their Friend Boost grows).
+  private async creditInvite(client: Client, userId: string, st: InviteState, doc: PlayerDoc | null) {
+    const players = getPlayers();
+    if (!players || doc?.invitedBy) return;
+    try {
+      const ref = this.refs.get(client.sessionId);
+      let inviter = ref && ref !== userId ? await players.findOne({ _id: ref }) : null;
+      if (!inviter) inviter = await players.findOne({ invitesSent: userId } as Filter<PlayerDoc>);
+      if (!inviter || inviter._id === userId) return;
+      let credited = false;
+      try {
+        const res = await players.updateOne(
+          { _id: userId, invitedBy: { $exists: false } } as Filter<PlayerDoc>,
+          { $set: { invitedBy: inviter._id }, $setOnInsert: { version: 1, updatedAt: new Date() } },
+          { upsert: true },
+        );
+        credited = res.modifiedCount + (res.upsertedCount ?? 0) > 0;
+      } catch {
+        // Duplicate key: another session credited this account first.
+      }
+      if (!credited) return;
+      await players.updateOne({ _id: inviter._id }, { $inc: { invites: 1 } });
+      const name = this.state.players.get(client.sessionId)?.username || "A friend";
+      if (this.inviteStates.get(client.sessionId) === st) client.send("invitedBy", { name: inviter.username || "A friend" });
+      // The inviter, when online in this room.
+      for (const [sid, uid] of this.userIds) {
+        const is = this.inviteStates.get(sid);
+        const c = this.clients.find((c) => c.sessionId === sid);
+        if (uid !== inviter._id || !is || !c) continue;
+        is.joined++;
+        c.send("invite", inviteView(is));
+        c.send("friendJoined", { name });
+      }
+    } catch (err) {
+      console.warn("[WorldRoom] creditInvite failed", err);
+    }
   }
 }

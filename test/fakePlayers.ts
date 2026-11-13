@@ -15,9 +15,11 @@ export function fakePlayers(seed: PlayerDoc[] = []) {
     docs,
     gate,
     release,
-    async findOne(filter: { _id: string }) {
+    async findOne(filter: { _id?: string; invitesSent?: string }) {
       await gate;
-      return docs.get(filter._id) ?? null;
+      if (filter._id !== undefined) return docs.get(filter._id) ?? null;
+      if (filter.invitesSent !== undefined) return [...docs.values()].find((d) => d.invitesSent?.includes(filter.invitesSent!)) ?? null;
+      return null;
     },
     find(filter: Record<string, { $gt: number }>) {
       const [field, { $gt }] = Object.entries(filter)[0];
@@ -40,13 +42,15 @@ export function fakePlayers(seed: PlayerDoc[] = []) {
       const [field, { $gt }] = Object.entries(filter)[0];
       return [...docs.values()].filter((d: any) => d[field] > $gt).length;
     },
-    async updateOne(filter: { _id: string }, update: any, options: any) {
+    async updateOne(filter: { _id: string; invitedBy?: { $exists: boolean } }, update: any, options: any) {
       const existing = docs.get(filter._id);
+      if (filter.invitedBy?.$exists === false && existing?.invitedBy) return { modifiedCount: 0, upsertedCount: 0 };
       if (!existing && !options?.upsert) return { modifiedCount: 0 };
       const next: any = { ...(existing ?? { _id: filter._id, ...(update.$setOnInsert ?? {}) }), ...(update.$set ?? {}) };
       for (const [k, v] of Object.entries(update.$max ?? {})) next[k] = Math.max(next[k] ?? -Infinity, v as number);
+      for (const [k, v] of Object.entries(update.$inc ?? {})) next[k] = (next[k] ?? 0) + (v as number);
       docs.set(filter._id, next);
-      return { modifiedCount: 1 };
+      return existing ? { modifiedCount: 1, upsertedCount: 0 } : { modifiedCount: 0, upsertedCount: 1 };
     },
   };
   return fake as unknown as Collection<PlayerDoc> & { docs: Map<string, PlayerDoc>; gate: Promise<void>; release: () => void };

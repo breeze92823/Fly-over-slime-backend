@@ -45,6 +45,10 @@ export interface PlayerDoc {
   stats?: Record<string, number>;
   gear?: Record<string, number>; // Flight Gear levels by id
   settings?: Record<string, boolean | number | string>;
+  // Invites (invite.ts): written by the server only, never by saveProgress.
+  invitesSent?: string[]; // friend ids this player invited directly
+  invites?: number; // friends who joined through this player's invites (only ever $inc'ed)
+  invitedBy?: string; // who invited THIS player (set once)
   lastSeen?: number; // epoch ms of the last activity
   version: number;
   updatedAt: Date;
