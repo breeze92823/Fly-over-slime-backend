@@ -1,9 +1,13 @@
 import { matchMaker } from "colyseus";
 
-// Tells the Bloxity matchmaker which rooms live on this pod (every 2 s), so friends' "Join" and
-// "Play with friends" invites and the game page's Open Rooms list can find them across pods.
-// A no-op unless deployed by Bloxity hosting (BLOXITY_REPORT_TOKEN, MATCHMAKER_REPORT_URL and
-// BLOXITY_GAME_ID are injected there). Call installRoomReporter() after listen().
+// Boxity cross-pod room directory: pushes this pod's live rooms to the matchmaker every ~2 s so the
+// game page's "Open Rooms" list, the ESC menu's server list, friend joins and join-by-id work across
+// pods. A no-op unless deployed by Boxity hosting (BLOXITY_REPORT_TOKEN, MATCHMAKER_REPORT_URL and
+// BLOXITY_GAME_ID are injected there), so it is safe locally. Call installRoomReporter() after listen().
+//
+// `started` must stay false for a room people can still join: the directory treats a started room as in
+// progress and lists it as LOCKED (not joinable, hidden from the lists). This game has no rounds, so a
+// room is never started unless its metadata says so.
 
 export function installRoomReporter(): void {
   const token = process.env.BLOXITY_REPORT_TOKEN;
@@ -11,27 +15,28 @@ export function installRoomReporter(): void {
   const gameId = process.env.BLOXITY_GAME_ID;
   if (!token || !base || !gameId) return;
   const url = `${base.replace(/\/$/, "")}/${gameId}/rooms`;
-  const podName = process.env.POD_NAME || "local";
+  const podName = process.env.POD_NAME || process.env.HOSTNAME || "local";
 
-  async function tick() {
+  async function tick(): Promise<void> {
     try {
-      const rooms = await matchMaker.query({ name: "world" });
+      const listings = await matchMaker.query({});
+      const rooms = listings.map((listing) => {
+        const metadata = (listing.metadata || {}) as Record<string, unknown>;
+        return {
+          colyseusRoomId: listing.roomId,
+          name: listing.name || undefined,
+          clients: listing.clients ?? 0,
+          maxClients: listing.maxClients ?? 0,
+          locked: !!listing.locked,
+          private: !!listing.private,
+          started: !!metadata.started,
+          metadata: listing.metadata || undefined,
+        };
+      });
       await fetch(url, {
         method: "POST",
         headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-        body: JSON.stringify({
-          podName,
-          players: rooms.reduce((n, r) => n + r.clients, 0),
-          rooms: rooms.map((r) => ({
-            colyseusRoomId: r.roomId,
-            clients: r.clients,
-            maxClients: r.maxClients,
-            locked: !!r.locked,
-            private: !!r.private,
-            started: true,
-            metadata: r.metadata ?? {},
-          })),
-        }),
+        body: JSON.stringify({ podName, players: rooms.reduce((n, r) => n + r.clients, 0), rooms }),
         signal: AbortSignal.timeout(4000),
       });
     } catch {
@@ -39,4 +44,5 @@ export function installRoomReporter(): void {
     }
   }
   setInterval(() => void tick(), 2000).unref();
+  void tick();
 }
