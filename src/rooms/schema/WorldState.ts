@@ -6,21 +6,26 @@ export const PlayerState = schema(
   {
     username: t.string().default(""), // client-reported Bloxity displayName/username, not validated
     signedIn: t.boolean().default(false), // has a Bloxity id: only signed-in players are saved
-    pfp: t.string().default(""), // Bloxity profile picture URL ("" = none), for the others' racer heads
-    racing: t.boolean().default(false), // in a race right now (`race` message)
-    distance: t.float64().default(0), // this race's distance so far, studs
+    pfp: t.string().default(""), // Bloxity profile picture URL ("" = none)
+    uid: t.string().default(""), // verified Bloxity account id ("" = guest), matches chat messages' userId
+    emote: t.string().default(""), // Bloxity emote catalogue id the player is playing ("" = none)
+    emoteAt: t.float64().default(0), // server ms the emote started (late joiners start it mid-way)
     // Presence (presence.ts, `pose` / `loadout` / `setAvatar`): what the others draw in the world.
-    x: t.float64().default(0), // feet position in track coordinates (z minus the race scroll)
+    x: t.float64().default(0), // feet position, metres
     y: t.float64().default(0),
     z: t.float64().default(0),
-    yaw: t.float32().default(0), // heading, rad (PI = facing the gate)
-    speed: t.float32().default(0), // m/s, for flames and dead reckoning
-    boat: t.string().default(""), // equipped catalog ids (client config.js), "" = none / default
-    engine: t.string().default(""),
-    trail: t.string().default(""),
-    partner: t.string().default(""),
-    pets: t.string().default(""), // equipped pets "kind:tier,kind:tier"
-    world: t.string().default(""), // the world the player is in (client WORLDS id), "" = the start world
+    yaw: t.float32().default(0), // heading, rad
+    speed: t.float32().default(0), // ground speed m/s (drives run animation + dead reckoning)
+    vy: t.float32().default(0), // vertical speed m/s
+    grounded: t.boolean().default(true),
+    flying: t.boolean().default(false), // in the flight over the slime
+    pitch: t.float32().default(0), // flight somersault / dive angle, rad
+    roll: t.float32().default(0), // flight bank, rad
+    training: t.boolean().default(false), // pulling the slingshot
+    sling: t.string().default(""), // equipped slingshot id (client config.js SLINGSHOTS)
+    trail: t.string().default(""), // equipped flight trail id, "" = none
+    title: t.string().default(""), // equipped title id
+    pets: t.string().default(""), // equipped pets "id,id:g,id:d"
     avatar: t.string().default(""), // Bloxity look JSON { equipped, proportions, skin }, "" = default
   },
   "PlayerState",

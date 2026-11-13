@@ -7,60 +7,59 @@ describe("sanitizeProgress", () => {
   it("rejects non-objects and bounds numbers", () => {
     assert.strictEqual(sanitizeProgress(null), null);
     assert.strictEqual(sanitizeProgress([1]), null);
-    const out = sanitizeProgress({ trophies: 1e40, gems: -5, energy: NaN, rebirths: 3.7, autoRebirth: "yes", hack: "x" })!;
-    assert.strictEqual(out.trophies, CURRENCY_MAX);
-    assert.strictEqual(out.gems, 0);
-    assert.strictEqual(out.energy, undefined);
+    const out = sanitizeProgress({ wins: 1e40, skill: -5, tokens: NaN, rebirths: 3.7, autoFly: "yes", hack: "x" })!;
+    assert.strictEqual(out.wins, CURRENCY_MAX);
+    assert.strictEqual(out.skill, 0);
+    assert.strictEqual(out.tokens, undefined);
     assert.strictEqual(out.rebirths, 3);
-    assert.strictEqual(out.autoRebirth, undefined);
+    assert.strictEqual(out.autoFly, undefined);
     assert.ok(!("hack" in out));
   });
 
   it("keeps well-formed catalog ids and only equips an owned one", () => {
-    const out = sanitizeProgress({ boats: ["raft", "canoe", "canoe", "Bad Id!", 7], boat: "canoe", engines: ["basic", "ladder-3"], engine: "ladder-9" })!;
-    assert.deepStrictEqual(out.boats, ["raft", "canoe"]);
-    assert.strictEqual(out.boat, "canoe");
-    assert.deepStrictEqual(out.engines, ["basic", "ladder-3"]);
-    assert.strictEqual(out.engine, undefined);
-    assert.strictEqual(sanitizeProgress({ partner: "" })!.partner, "");
-    assert.strictEqual(sanitizeProgress({ trail: "waterRipple" })!.trail, "waterRipple");
+    const out = sanitizeProgress({ slingshots: ["twig", "wrap", "wrap", "Bad Id!", 7], equippedSling: "wrap", trails: ["red"], trail: "blue" })!;
+    assert.deepStrictEqual(out.slingshots, ["twig", "wrap"]);
+    assert.strictEqual(out.equippedSling, "wrap");
+    assert.strictEqual(out.trail, undefined, "an unowned trail is not equipped");
+    assert.strictEqual(sanitizeProgress({ trail: "" })!.trail, "");
+    assert.strictEqual(sanitizeProgress({ equippedSling: "steel" })!.equippedSling, "steel", "shape only when the list is absent");
   });
 
-  it("keeps well-formed pets and caps the equipped ones at the slots", () => {
+  it("keeps well-formed pets and discovered keys", () => {
     const out = sanitizeProgress({
-      petSlots: 2,
       pets: [
-        { kind: "dog", tier: 0, equipped: true, locked: false },
-        { kind: "cat", tier: 1.5, equipped: true },
-        { kind: "Bad Id!", tier: 0 },
-        { kind: "fox", tier: 2, equipped: true, locked: true },
-        { kind: "bear", tier: 0, equipped: true },
+        { uid: 1, id: "pup", tier: "", equipped: true },
+        { uid: 2, id: "cat", tier: "x", equipped: true },
+        { uid: 3, id: "Bad Id!", tier: "" },
+        { uid: 4, id: "fox", tier: "g", equipped: true },
         "x",
       ],
+      discovered: ["pup", "pup:g", "pup:z", "Bad Id!", "pup"],
     })!;
-    assert.deepStrictEqual(sanitizeProgress({ eggsSeen: ["dog", "dog", "Bad Id!", "dragon"] })!.eggsSeen, ["dog", "dragon"]);
-    const worlds = sanitizeProgress({ world: "city", worldsUnlocked: ["city", "city", "Bad Id!"] })!;
-    assert.deepStrictEqual([worlds.world, worlds.worldsUnlocked], ["city", ["city"]]);
-    assert.strictEqual(sanitizeProgress({ world: "Bad World!" })!.world, undefined);
     assert.deepStrictEqual(out.pets, [
-      { kind: "dog", tier: 0, equipped: true, locked: false },
-      { kind: "fox", tier: 2, equipped: true, locked: true },
-      { kind: "bear", tier: 0, equipped: false, locked: false },
+      { uid: 1, id: "pup", tier: "", equipped: true },
+      { uid: 4, id: "fox", tier: "g", equipped: true },
     ]);
+    assert.deepStrictEqual(out.discovered, ["pup", "pup:g"]);
   });
 
-  it("bounds the egg hatch upgrade and counter", () => {
-    const out = sanitizeProgress({ hatchMax: 99, eggsHatched: 12.8 })!;
+  it("bounds maps, daily and settings", () => {
+    const out = sanitizeProgress({
+      hatchMax: 99,
+      potions: { skill: 2.9, "bad id": 1, wins: "x" },
+      passes: { wins2x: true, bad: 1 },
+      daily: { unlocked: 99, last: 20000, claimed: [0, 0, 3, 99, "1"] },
+      settings: { sfx: false, volume: 0.5, name: "x".repeat(99) },
+    })!;
     assert.strictEqual(out.hatchMax, 16);
-    assert.strictEqual(out.eggsHatched, 12);
-    assert.strictEqual(sanitizeProgress({ hatchMax: 0 })!.hatchMax, 1);
-    assert.strictEqual(sanitizeProgress({ hatchMax: "8" })!.hatchMax, undefined);
+    assert.deepStrictEqual(out.potions, { skill: 2.9 });
+    assert.deepStrictEqual(out.passes, { wins2x: true });
+    assert.deepStrictEqual(out.daily, { unlocked: 31, last: 20000, claimed: [0, 3] });
+    assert.deepStrictEqual(out.settings, { sfx: false, volume: 0.5 });
   });
 
-  it("bounds the Online Gifts state", () => {
-    const out = sanitizeProgress({ giftTime: -4, giftsClaimed: [0, 0, 3, 99, "1"], potions: { golden: 2.9, "bad id": 1, doubleWin: "x" } })!;
-    assert.strictEqual(out.giftTime, 0);
-    assert.deepStrictEqual(out.giftsClaimed, [0, 3]);
-    assert.deepStrictEqual(out.potions, { golden: 2 });
+  it("keeps Flight Gear levels as bounded whole numbers", () => {
+    const out = sanitizeProgress({ gear: { dash: 2.7, shield: 999, suit: -3, "bad id": 1, wings: "x" } })!;
+    assert.deepStrictEqual(out.gear, { dash: 2, shield: 20, suit: 0 });
   });
 });
